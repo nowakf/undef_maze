@@ -1,0 +1,535 @@
+package main
+
+//tiles
+import (
+	"errors"
+	"fmt"
+	"math"
+	"math/rand"
+	"time"
+)
+
+const (
+	block  = '\u2588'
+	space  = ' '
+	fmark  = '!'
+	crmark = '\u2299'
+	arm_NS = '\u2503'
+	arm_EW = '\u2501'
+	arm_SE = '\u250F'
+	arm_SW = '\u2513'
+	arm_NE = '\u2517'
+	arm_NW = '\u251B'
+)
+
+var all = []rune{
+	block,
+	crmark,
+	arm_EW,
+	arm_NE,
+	arm_NS,
+	arm_NW,
+	arm_SE,
+	arm_SW,
+}
+
+type direction int
+
+const (
+	N direction = iota
+	S
+	E
+	W
+	SELF
+	Cardinal
+	NE
+	NW
+	SE
+	SW
+)
+
+var testmaze = []string{
+	"######################",
+	"#              !     #",
+	"# # #### ######### ###",
+	"#!# #  X             #",
+	"# # # ############ ###",
+	"# # # #          # # #",
+	"# # # #    X     # # #",
+	"# # # #          # # #",
+	"# # # #          # # #",
+	"# # # ######## # # # #",
+	"# # # #        # # # #",
+	"#    X         #     #",
+	"######################",
+}
+
+type maze struct {
+	directions map[vector]direction
+	width      int
+	fresh      []rune
+	old        []rune
+	constant   []rune
+	crawlers   []crawler
+	food       []food
+}
+
+func (m *maze) obstacle(at vector, desired vector) (next *vector) {
+	check := func(c vector) bool {
+		return c.y*m.width+c.x < len(m.fresh) && c.y*m.width+c.x >= 0 && m.fresh[c.y*m.width+c.x] != block
+	}
+
+	if check(at) {
+
+		d := desired.add(at)
+		return &d
+	}
+
+	for dir := range m.directions {
+		d := dir.add(at)
+		if check(d) {
+
+			return &d
+		}
+	}
+
+	panic("stuck!")
+
+}
+func (m *maze) path(source vector, sink vector) (path []vector) {
+
+	visited := make(map[vector]vector)
+	frontier := []vector{source}
+	increment := 0
+
+	var current vector
+
+	for current != sink && len(frontier)-increment > 0 {
+
+		current = frontier[increment]
+		increment++
+
+		println(current.x, current.y, "curr")
+
+		for _, neighbor := range m.neighbors(current) {
+			if _, ok := visited[neighbor]; !ok {
+
+				frontier = append(frontier, neighbor)
+				//mark as touched
+				visited[neighbor] = current
+
+				if neighbor == sink {
+					current = neighbor
+					break
+				}
+			}
+		}
+
+	}
+
+	println(increment, len(frontier), "i, f", current.x, current.y, sink.x, sink.y)
+
+	if current == sink {
+		for current != source {
+			path = append(path, current)
+			current = visited[current]
+			return path
+		}
+	}
+
+	return nil
+
+}
+
+func (m *maze) neighbors(of vector) []vector {
+	neighbors := make([]vector, 4)
+	check := func(at vector) bool {
+		return at.x < m.width && at.x >= 0 && at.y < len(m.constant)/m.width && at.y >= 0 && m.constant[at.y*m.width+at.x] == space
+	}
+	i := 0
+	var n vector
+	if n = of.add(vector{1, 0}); check(n) {
+		neighbors[i] = n
+		i++
+	}
+	if n = of.add(vector{-1, 0}); check(n) {
+		neighbors[i] = n
+		i++
+	}
+	if n = of.add(vector{0, 1}); check(n) {
+		neighbors[i] = n
+		i++
+	}
+	if n = of.add(vector{0, -1}); check(n) {
+		neighbors[i] = n
+		i++
+	}
+
+	return neighbors[:i]
+
+}
+
+func (m *maze) Convert(from []string) error {
+
+	m.directions = map[vector]direction{
+		vector{0, 0}:   SELF,
+		vector{0, 1}:   N,
+		vector{0, -1}:  S,
+		vector{1, 0}:   E,
+		vector{-1, 0}:  W,
+		vector{1, 1}:   NE,
+		vector{1, -1}:  NW,
+		vector{-1, 1}:  SE,
+		vector{-1, -1}: SW,
+	}
+
+	if len(from) < 1 {
+		return errors.New("0 length input!")
+	}
+
+	m.width = len(from[0])
+
+	for y, line := range from {
+		if len(line) != m.width {
+			return errors.New("uneven widths!")
+		}
+
+		m.fresh = append(m.fresh, make([]rune, len(line))...)
+		m.constant = append(m.fresh, make([]rune, len(line))...)
+
+		for x, letter := range line {
+
+			m.constant[y*m.width+x] = space
+
+			switch letter {
+			case '#':
+				m.fresh[y*m.width+x] = block
+				m.constant[y*m.width+x] = block
+			case ' ':
+				m.fresh[y*m.width+x] = space
+			case 'X':
+				m.fresh[y*m.width+x] = crmark
+				m.crawlers = append(m.crawlers, Crawler(x, y))
+			case '!':
+				m.fresh[y*m.width+x] = fmark
+				m.food = append(m.food, food{x, y})
+			default:
+				return errors.New("unknown symbol " + string(letter))
+
+			}
+
+		}
+	}
+
+	m.old = m.fresh
+
+	return nil
+
+}
+func (m *maze) Draw() {
+
+	//fmt.Print("\033[0;0H")
+
+	for _, crawler := range m.crawlers {
+		crawler.Seek(m)
+	}
+
+	//m.fresh, m.old = m.old, m.fresh
+
+	//for i, letter := range m.old {
+	//	if i%m.width == 0 {
+	//		fmt.Print("\n")
+	//	}
+	//	fmt.Print(string(letter))
+	//}
+}
+
+type food vector
+
+type vector struct {
+	x, y int
+}
+
+func (c vector) sub(o vector) vector {
+	return vector{
+		c.x - o.x,
+		c.y - o.y,
+	}
+}
+
+func (c vector) unit() vector {
+	un := func(a int) int {
+		if a == 0 {
+			return a
+		}
+		return a / int(math.Abs(float64(a)))
+	}
+	return vector{
+		un(c.x),
+		un(c.y),
+	}
+
+}
+func (c vector) dot(to vector) vector {
+	return vector{
+		c.x * to.x,
+		c.y * to.y,
+	}
+}
+func (c vector) add(to vector) vector {
+	return vector{
+		c.x + to.x,
+		c.y + to.y,
+	}
+}
+
+type crawler struct {
+	location vector
+	arms     []arm
+	max      int
+	target   *food
+}
+
+func Crawler(x, y int) (c crawler) {
+	return crawler{
+		vector{x, y},
+		[]arm{arm{&c, nil, nil}},
+		5,
+		nil,
+	}
+}
+
+func (c *crawler) Acquire(f []food) *food {
+	hyp := math.MaxInt64
+	var target food
+	for _, targ := range f {
+		diff := vector(targ).sub(c.location)
+		thyp := int(math.Sqrt(float64(diff.x*diff.x + diff.y*diff.y)))
+		if hyp > thyp {
+			hyp = thyp
+			target = targ
+		}
+	}
+	return &target
+}
+
+func (c *crawler) Seek(m *maze) {
+
+	if c.target == nil {
+		c.target = c.Acquire(m.food)
+	}
+
+	for _, arm := range c.arms {
+
+		//a := arm.rebase(m, c.location, c.max)
+
+		//if a == nil {
+		//	panic("arm is nil")
+		//}
+
+		//c.location = a.loc
+
+		arm.extend(m, c.target)
+
+		arm.draw(m)
+		m.fresh[c.location.y*m.width+c.location.x] = crmark
+
+	}
+}
+
+type arm struct {
+	parent *crawler
+	root   *segment
+	path   []vector
+}
+
+//either extends arm, or returns nil
+func (a *arm) extend(m *maze, f *food) {
+	if a.root == nil {
+		root := segment{a.parent.location, nil}
+		a.root = &root
+	}
+	if a.path == nil {
+		a.path = m.path(a.root.loc, vector(*f))
+		println("pathlen", len(a.path), a.root.loc.x, a.root.loc.y, f.x, f.y)
+	}
+	if len(a.path) > 0 {
+		seg := segment{a.path[0], nil}
+		a.root.last().child = &seg
+		a.path = a.path[1:]
+	} else {
+		//either there, or no path
+	}
+
+}
+func (a *arm) draw(m *maze) {
+	if a.root != nil && m != nil {
+		a.root.draw(m)
+	} else {
+		//
+	}
+}
+
+type segment struct {
+	loc   vector
+	child *segment
+}
+
+func (a *segment) rebase(m *maze, crawlerLoc vector, max int) *segment {
+
+	if a.loc != crawlerLoc {
+		//
+	}
+
+	if a.length() > max {
+		//cut off excess
+		//a.at(max).child = nil
+	}
+
+	return a
+
+}
+func (a *segment) map_(f func(*segment)) {
+	seg := a
+	for seg.child != nil {
+		f(seg)
+		seg = seg.child
+	}
+
+}
+
+func (a *segment) at(i int) *segment {
+	seg := a
+	for seg.child != nil && i > 0 {
+		i--
+		seg = seg.child
+	}
+
+	if i > 0 {
+		return nil
+	}
+
+	return seg
+}
+func (a *segment) last() *segment {
+	seg := a
+
+	for seg.child != nil {
+		seg = seg.child
+	}
+	return seg
+}
+func (a *segment) length() int {
+	seg := a
+	i := 1
+	for seg.child != nil {
+		seg = seg.child
+		i++
+	}
+	return i
+
+}
+
+func (a *segment) variable(argNo int, f func(ss []*segment)) {
+	seg := a
+	acc := make([]*segment, 0, argNo)
+	runLength := argNo
+
+	acc = append(acc, seg)
+
+	for seg.child != nil {
+		argNo--
+
+		seg = seg.child
+
+		acc = append(acc, seg)
+
+		if argNo == 0 {
+			f(acc)
+			argNo = runLength
+			acc = make([]*segment, 0, argNo)
+		}
+
+	}
+
+	if len(acc) > 0 {
+		f(acc)
+	}
+}
+
+func (a *segment) bend(from, to direction) rune {
+
+	type c struct {
+		f direction
+		t direction
+	}
+
+	switch (c{from, to}) {
+	case c{N, S}, c{S, N}, c{N, SELF}, c{S, SELF}:
+		return arm_NS
+	case c{W, E}, c{E, W}, c{E, SELF}, c{W, SELF}:
+		return arm_EW
+	case c{N, E}:
+		return arm_NE
+	case c{S, E}:
+		return arm_SE
+	case c{N, W}:
+		return arm_NW
+	case c{S, W}:
+		return arm_SW
+	default:
+		panic(fmt.Sprintf("unexpected bend %d, %d,", from, to))
+	}
+
+}
+func (m *maze) orient(s1, s2 *segment) direction {
+
+	rel := s1.loc.sub(s2.loc).unit()
+
+	if dir, ok := m.directions[rel]; dir < Cardinal && ok {
+		return dir
+	}
+
+	panic(fmt.Sprintf("unexpected relation: -- vectors s1(%d, %d) and s2(%d, %d), and v(%d, %d)",
+		s1.loc.x, s1.loc.y,
+		s2.loc.x, s2.loc.y,
+		rel.x, rel.y,
+	))
+}
+
+func (a *segment) draw(m *maze) {
+	f := func(ss []*segment) {
+		switch len(ss) {
+		case 0:
+			panic("0 length segment")
+		case 1:
+			m.fresh[ss[0].loc.y*m.width+ss[0].loc.x] = '-'
+		case 2:
+			m.fresh[ss[1].loc.y*m.width+ss[1].loc.x] = a.bend(m.orient(ss[0], ss[1]), SELF)
+		case 3:
+			m.fresh[ss[1].loc.y*m.width+ss[1].loc.x] = a.bend(m.orient(ss[0], ss[1]), m.orient(ss[1], ss[2]))
+
+		default:
+			panic("more arguments than pssible")
+
+		}
+
+	}
+	a.variable(3, f)
+}
+
+func main() {
+
+	m := maze{}
+
+	rand.Seed(time.Now().UnixNano())
+
+	m.Convert(testmaze)
+
+	fps := time.NewTicker(time.Second)
+	//I guess Ctrl+C works?
+	for {
+		m.Draw()
+		<-fps.C
+	}
+}
